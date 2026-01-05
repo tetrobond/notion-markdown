@@ -114,7 +114,7 @@
       
       // Extract text and any nested block containers
       const { text, nestedNodes } = extractNodeData(node);
-
+      
       // Helper to process nested nodes
       const processNested = (d) => {
           let res = "";
@@ -126,12 +126,34 @@
           return res;
       };
       
+      // Only render if there is text or nested content. 
+      // Empty blocks (ghost/shadow children) often have no text and no nested nodes that produce markdown.
+      // But we need to be careful: a block might be a container for other blocks (like a column) with no text itself.
+      // However, `extractNodeData` returns `nestedNodes`. If both `text` and `nestedNodes` are empty, it's likely a ghost block.
+      // Exception: Divider has no text.
+      
+      const hasText = text && text.trim().length > 0;
+      const hasNested = nestedNodes && nestedNodes.length > 0;
+      
+      // 8. Divider (check first as it has no text)
+      if (node.classList.contains(NOTION_CLASSES.DIVIDER)) {
+          return `\n---\n\n`;
+      }
+
+      if (!hasText && !hasNested) {
+          return "";
+      }
+
       // 1. Headers
       if ([
           NOTION_CLASSES.HEADER,
           NOTION_CLASSES.SUB_HEADER,
           NOTION_CLASSES.SUB_SUB_HEADER
       ].some(cls => node.classList.contains(cls))) {
+          // If header has no text, skip printing header markers to avoid empty `## `
+          if (!hasText) {
+             return processNested(depth);
+          }
           let prefix = "#";
           if (node.classList.contains(NOTION_CLASSES.SUB_HEADER)) prefix = "##";
           if (node.classList.contains(NOTION_CLASSES.SUB_SUB_HEADER)) prefix = "###";
@@ -140,23 +162,49 @@
 
       // 2. Lists
       if (node.classList.contains(NOTION_CLASSES.BULLETED_LIST)) {
-          md += `${indent}- ${text}\n`;
-          md += processNested(depth + 1);
-          return md;
+          // If list item has no text, it might be just a container for nested items?
+          // If it has no text AND no nested items, we skip.
+          // If it has no text BUT has nested items, Notion treats it as an indented block or sub-list? 
+          // Usually Notion lists always have a bullet.
+          if (hasText) {
+              md += `${indent}- ${text}\n`;
+              md += processNested(depth + 1);
+              return md;
+          } else if (hasNested) {
+              // Ghost list item acting as wrapper? 
+              // If we print `- ` with empty text, we get empty bullets.
+              // Try to print just nested items at current depth? Or depth+1?
+              // If it's a list item but empty, it might be a wrapper.
+              md += processNested(depth); 
+              return md;
+          }
+          return "";
       }
       if (node.classList.contains(NOTION_CLASSES.NUMBERED_LIST)) {
-          md += `${indent}1. ${text}\n`;
-          md += processNested(depth + 1);
-          return md;
+           if (hasText) {
+              md += `${indent}1. ${text}\n`;
+              md += processNested(depth + 1);
+              return md;
+          } else if (hasNested) {
+              md += processNested(depth);
+              return md;
+          }
+          return "";
       }
 
       // 3. To-Do
       if (node.classList.contains(NOTION_CLASSES.TO_DO)) {
-          const checkbox = node.querySelector('input[type="checkbox"]');
-          const isChecked = checkbox && (checkbox.checked || checkbox.getAttribute('aria-checked') === 'true');
-          md += `${indent}- [${isChecked ? 'x' : ' '}] ${text}\n`;
-          md += processNested(depth + 1);
-          return md;
+          if (hasText) {
+              const checkbox = node.querySelector('input[type="checkbox"]');
+              const isChecked = checkbox && (checkbox.checked || checkbox.getAttribute('aria-checked') === 'true');
+              md += `${indent}- [${isChecked ? 'x' : ' '}] ${text}\n`;
+              md += processNested(depth + 1);
+              return md;
+          } else if (hasNested) {
+              md += processNested(depth);
+              return md;
+          }
+          return "";
       }
 
       // 4. Code
@@ -168,16 +216,21 @@
               lang = "mermaid";
           }
           md += `\n${indent}\`\`\`${lang}\n${codeText}\n${indent}\`\`\`\n\n`;
-          // Code blocks rarely have nested blocks, but if they do:
           md += processNested(depth); 
           return md;
       }
 
       // 5. Quote
       if (node.classList.contains(NOTION_CLASSES.QUOTE)) {
-          md += `\n${indent}> ${text}\n\n`;
-          md += processNested(depth); // Keep same depth for nested items in quote? Or indent?
-          return md;
+          if (hasText) {
+              md += `\n${indent}> ${text}\n\n`;
+              md += processNested(depth);
+              return md;
+          } else if (hasNested) {
+              md += processNested(depth);
+              return md;
+          }
+          return "";
       }
 
       // 6. Callout
@@ -197,11 +250,6 @@
           return md;
       }
       
-      // 8. Divider
-      if (node.classList.contains(NOTION_CLASSES.DIVIDER)) {
-          return `\n---\n\n`;
-      }
-
       // 9. Text / Default
       if (text) {
           md += `${indent}${text}\n\n`;
