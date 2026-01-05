@@ -1,6 +1,6 @@
 (function() {
+  const debug = false;
   const visited = new Set();
-  const MAX_DEPTH = 500; 
 
   // --- Helpers ---
 
@@ -71,15 +71,20 @@
     CALLOUT: 'notion-callout-block',
     CODE: 'notion-code-block',
     IMAGE: 'notion-image-block',
-    DIVIDER: 'notion-divider-block'
+    DIVIDER: 'notion-divider-block',
+    BLOCK_CLASS: 'notion-selectable',
+    COMMENTS: [
+      'notion-margin-discussion-item',
+      'notion-discussion-container'
+    ]
   };
 
   // --- Main Parsing Logic ---
 
   function parseNotionBlock(element, depth = 0) {
       if (!element) return "";
-      if (depth > MAX_DEPTH) return "";
       
+      // Prevent cycles
       if (visited.has(element)) return "";
       visited.add(element);
       
@@ -88,16 +93,16 @@
       const children = Array.from(element.children);
       
       children.forEach(child => {
-          if (child.classList.contains('notion-margin-discussion-item') || 
-              child.classList.contains('notion-discussion-container')) {
+          // Filter comments
+          if (NOTION_CLASSES.COMMENTS.some(cls => child.classList.contains(cls))) {
+              if (debug) console.log("Skipping comment element:", child);
               return;
           }
 
-          if (child.classList.contains('notion-selectable')) {
-              markdown += processBlock(child, depth);
-          } else {
-              markdown += parseNotionBlock(child, depth);
-          }
+          // Identify if this child is a block itself
+          markdown += child.classList.contains(NOTION_CLASSES.BLOCK_CLASS) ?
+            processBlock(child, depth) :
+            parseNotionBlock(child, depth);
       });
       
       return markdown;
@@ -122,14 +127,15 @@
       };
       
       // 1. Headers
-      if (node.classList.contains(NOTION_CLASSES.HEADER)) {
-          return `\n# ${text}\n\n` + processNested(depth);
-      }
-      if (node.classList.contains(NOTION_CLASSES.SUB_HEADER)) {
-          return `\n## ${text}\n\n` + processNested(depth);
-      }
-      if (node.classList.contains(NOTION_CLASSES.SUB_SUB_HEADER)) {
-          return `\n### ${text}\n\n` + processNested(depth);
+      if ([
+          NOTION_CLASSES.HEADER,
+          NOTION_CLASSES.SUB_HEADER,
+          NOTION_CLASSES.SUB_SUB_HEADER
+      ].some(cls => node.classList.contains(cls))) {
+          let prefix = "#";
+          if (node.classList.contains(NOTION_CLASSES.SUB_HEADER)) prefix = "##";
+          if (node.classList.contains(NOTION_CLASSES.SUB_SUB_HEADER)) prefix = "###";
+          return `\n${prefix} ${text}\n\n` + processNested(depth);
       }
 
       // 2. Lists
@@ -226,8 +232,7 @@
         
         children.forEach(child => {
              // Filter comments
-             if (child.classList.contains('notion-margin-discussion-item') || 
-                 child.classList.contains('notion-discussion-container')) {
+             if (NOTION_CLASSES.COMMENTS.some(cls => child.classList.contains(cls))) {
                  return;
              }
              
@@ -235,7 +240,7 @@
              if (child === node) return; // safety
              
              // Check if this child is a block
-             if (child.classList.contains('notion-selectable')) {
+             if (child.classList.contains(NOTION_CLASSES.BLOCK_CLASS)) {
                  nestedNodes.push(child);
                  // Do not recurse into this block, as it will be processed by processBlock
                  return;
