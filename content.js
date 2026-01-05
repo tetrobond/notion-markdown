@@ -1,6 +1,6 @@
 (function() {
+  const debug = false;
   const visited = new Set();
-  const MAX_DEPTH = 500; // Protect against stack overflow
 
   // --- Helpers ---
 
@@ -79,15 +79,19 @@
     CALLOUT: 'notion-callout-block',
     CODE: 'notion-code-block',
     IMAGE: 'notion-image-block',
-    DIVIDER: 'notion-divider-block'
+    DIVIDER: 'notion-divider-block',
+    BLOCK_CLASS: 'notion-selectable',
+    COMMENTS: [
+      'notion-margin-discussion-item',
+      'notion-discussion-container'
+    ]
   };
 
   // --- Main Parsing Logic ---
 
   function parseNotionBlock(element, depth = 0) {
       if (!element) return "";
-      if (depth > MAX_DEPTH) return "";
-      
+
       // Prevent cycles
       if (visited.has(element)) return "";
       visited.add(element);
@@ -97,18 +101,17 @@
       const children = Array.from(element.children);
       
       children.forEach(child => {
-          // Filter comments - strict check on the element itself
-          if (child.classList.contains('notion-margin-discussion-item') || 
-              child.classList.contains('notion-discussion-container')) {
+          // Filter comments
+          if (NOTION_CLASSES.COMMENTS.some(cls => child.classList.contains(cls))) {
+              if (debug) console.log("Skipping comment element:", child);
               return;
           }
 
-          if (child.classList.contains('notion-selectable')) {
-              markdown += processBlock(child, depth);
-          } else {
-              // Recurse into layout wrappers
-              markdown += parseNotionBlock(child, depth);
-          }
+          // Identify if this child is a block itself
+          // Notion blocks have `notion-selectable` class
+          markdown += child.classList.contains(NOTION_CLASSES.BLOCK_CLASS) ?
+            processBlock(child, depth) :
+            parseNotionBlock(child, depth); // Recurse into non-block children
       });
       
       return markdown;
@@ -119,14 +122,12 @@
       const indent = "  ".repeat(depth);
       
       // 1. Headers
-      if (node.classList.contains(NOTION_CLASSES.HEADER)) {
+      if ([
+            NOTION_CLASSES.HEADER,
+            NOTION_CLASSES.SUB_HEADER,
+            NOTION_CLASSES.SUB_SUB_HEADER
+        ].some(cls => node.classList.contains(cls))) {
           return `\n# ${getBlockContent(node)}\n\n`;
-      }
-      if (node.classList.contains(NOTION_CLASSES.SUB_HEADER)) {
-          return `\n## ${getBlockContent(node)}\n\n`;
-      }
-      if (node.classList.contains(NOTION_CLASSES.SUB_SUB_HEADER)) {
-          return `\n### ${getBlockContent(node)}\n\n`;
       }
 
       // 2. Lists
@@ -153,7 +154,7 @@
           return md;
       }
 
-      // 4. Code
+      // 4. Code / Mermaid
       if (node.classList.contains(NOTION_CLASSES.CODE)) {
           const codeEl = node.querySelector('code') || node.querySelector('[contenteditable="true"]') || node;
           const text = codeEl.textContent;
@@ -221,8 +222,13 @@
   }
 
   function getBlockContent(node) {
-      const contentNode = node.querySelector('[contenteditable="true"]') || node.querySelector('.notion-text-block') || node;
-      return getFormattedText(contentNode).trim();
+      const editables = [...node.querySelectorAll('[contenteditable="true"]')];
+      if (editables.length > 0) return editables.map(getFormattedText).join('  \n').trim();
+
+      const textBlocks = [...node.querySelectorAll(`.${NOTION_CLASSES.TEXT}`)];
+      if (textBlocks.length > 0) return textBlocks.map(getFormattedText).join('  \n').trim();
+      
+      return getFormattedText(node).trim();
   }
 
   function getListContent(node) {
