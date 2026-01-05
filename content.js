@@ -110,7 +110,7 @@
 
   function processBlock(node, depth) {
       let md = "";
-      const indent = "  ".repeat(depth);
+      const indent = "    ".repeat(depth);
       
       // Extract text and any nested block containers
       const { text, nestedNodes } = extractNodeData(node);
@@ -125,12 +125,6 @@
           }
           return res;
       };
-      
-      // Only render if there is text or nested content. 
-      // Empty blocks (ghost/shadow children) often have no text and no nested nodes that produce markdown.
-      // But we need to be careful: a block might be a container for other blocks (like a column) with no text itself.
-      // However, `extractNodeData` returns `nestedNodes`. If both `text` and `nestedNodes` are empty, it's likely a ghost block.
-      // Exception: Divider has no text.
       
       const hasText = text && text.trim().length > 0;
       const hasNested = nestedNodes && nestedNodes.length > 0;
@@ -150,7 +144,6 @@
           NOTION_CLASSES.SUB_HEADER,
           NOTION_CLASSES.SUB_SUB_HEADER
       ].some(cls => node.classList.contains(cls))) {
-          // If header has no text, skip printing header markers to avoid empty `## `
           if (!hasText) {
              return processNested(depth);
           }
@@ -162,19 +155,11 @@
 
       // 2. Lists
       if (node.classList.contains(NOTION_CLASSES.BULLETED_LIST)) {
-          // If list item has no text, it might be just a container for nested items?
-          // If it has no text AND no nested items, we skip.
-          // If it has no text BUT has nested items, Notion treats it as an indented block or sub-list? 
-          // Usually Notion lists always have a bullet.
           if (hasText) {
               md += `${indent}- ${text}\n`;
               md += processNested(depth + 1);
               return md;
           } else if (hasNested) {
-              // Ghost list item acting as wrapper? 
-              // If we print `- ` with empty text, we get empty bullets.
-              // Try to print just nested items at current depth? Or depth+1?
-              // If it's a list item but empty, it might be a wrapper.
               md += processNested(depth); 
               return md;
           }
@@ -215,7 +200,11 @@
           if (codeText.trim().startsWith('flowchart') || codeText.trim().startsWith('graph') || codeText.trim().startsWith('sequenceDiagram')) {
               lang = "mermaid";
           }
-          md += `\n${indent}\`\`\`${lang}\n${codeText}\n${indent}\`\`\`\n\n`;
+          
+          // Indent the code content itself
+          const indentedCode = codeText.split('\n').map(line => `${indent}${line}`).join('\n');
+          
+          md += `\n${indent}\`\`\`${lang}\n${indentedCode}\n${indent}\`\`\`\n\n`;
           md += processNested(depth); 
           return md;
       }
