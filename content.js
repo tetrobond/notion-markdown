@@ -1,35 +1,32 @@
 (function() {
+  const visited = new Set();
+  const MAX_DEPTH = 500; // Protect against stack overflow
+
   // --- Helpers ---
 
-  // Removed strict visibility check as it can be flaky in some contexts
   function isVisible(elem) {
-    return true; 
+    // Basic check for display:none
+    if (elem.style && elem.style.display === 'none') return false;
+    return true;
   }
 
   // Extract text with basic Markdown formatting
   function getFormattedText(node) {
     if (!node) return "";
     
-    // Text node
+    // Skip comments in text extraction
+    if (node.nodeType === Node.ELEMENT_NODE && 
+       (node.classList.contains('notion-margin-discussion-item') || node.classList.contains('notion-discussion-container'))) {
+        return "";
+    }
+    
     if (node.nodeType === Node.TEXT_NODE) {
       return node.textContent;
     }
     
-    // Element node
     if (node.nodeType !== Node.ELEMENT_NODE) return "";
     
-    // Skip strictly hidden/structural elements if needed, but for now be permissive
-    // Notion code blocks: don't format internal content, handled by code block parser?
-    // Actually, we do want text content of code blocks, but usually `textContent` is enough.
-    // However, if we are inside a contenteditable, we want to recurse.
-
     let content = "";
-    
-    // If it's a code block container, just get text content to avoid formatting code syntax
-    // But `getFormattedText` is called on the *content* of the block.
-    // If we are processing a Code Block, we usually grab `.textContent` directly.
-    // For other blocks, we recurse.
-    
     node.childNodes.forEach(child => {
       content += getFormattedText(child);
     });
@@ -89,15 +86,20 @@
 
   function parseNotionBlock(element, depth = 0) {
       if (!element) return "";
+      if (depth > MAX_DEPTH) return "";
+      
+      // Prevent cycles
+      if (visited.has(element)) return "";
+      visited.add(element);
       
       let markdown = "";
       
       const children = Array.from(element.children);
       
       children.forEach(child => {
-          // Filter comments
+          // Filter comments - strict check on the element itself
           if (child.classList.contains('notion-margin-discussion-item') || 
-              child.querySelector('.notion-margin-discussion-item')) {
+              child.classList.contains('notion-discussion-container')) {
               return;
           }
 
@@ -191,20 +193,28 @@
       }
 
       // 9. Text (Explicit or Implicit)
-      // Check if it's a text block or just has text content
       const text = getBlockContent(node);
       if (text) {
           return `${indent}${text}\n\n`;
       }
       
-      // If we are here, we found a block but extracted no text.
-      // It might be a grouping block or column that `parseNotionBlock` didn't recurse into
-      // because `processBlock` claimed it.
-      // We should check for nested blocks.
-      
-      // If the node has children that are notion-selectable, we should recurse.
+      // Fallback: If no text found, but has selectable children, recurse.
       if (node.querySelector('.notion-selectable')) {
-          return parseNotionBlock(node, depth);
+          // IMPORTANT: Check visited to ensure we don't loop if we somehow got here with same node
+          if (!visited.has(node)) {
+             return parseNotionBlock(node, depth);
+          } else {
+             // If node is already visited, we might still need to process its children 
+             // if they haven't been processed.
+             // But parseNotionBlock adds to visited at START.
+             // So if we are here, we are calling parseNotionBlock(node) again?
+             // NO. processBlock(node) is called. node IS visited?
+             // No, processBlock doesn't add to visited. parseNotionBlock does.
+             // So node is NOT in visited (unless it's a cycle).
+             // Wait. parseNotionBlock(parent) -> processBlock(child). child is NOT in visited.
+             // So calling parseNotionBlock(child) is valid.
+             return parseNotionBlock(node, depth);
+          }
       }
 
       return "";
@@ -220,52 +230,33 @@
       let nested = null;
       
       const children = Array.from(node.children);
-      
-      // Look for the "row" div. It usually contains the text.
-      // Heuristic: The row is the child that contains the contenteditable.
       const contentDiv = node.querySelector('[contenteditable="true"]');
       
       let row;
       if (contentDiv) {
-          // Walk up from contentDiv to find the direct child of `node`
           let curr = contentDiv;
-          while (curr && curr.parentElement !== node) {
+          // Robust loop with limit
+          let i = 0;
+          while (curr && curr.parentElement !== node && i < 50) {
               curr = curr.parentElement;
+              i++;
           }
           row = curr;
           text = getFormattedText(contentDiv).trim();
       } else {
-          // Fallback if no contenteditable found
           row = children[0];
           text = getFormattedText(row).trim();
       }
       
-      // Find nested container
-      // Usually a sibling of the row, or deeper inside the row structure
-      // Notion nested lists are often siblings of the row div in the block div.
       nested = children.find(c => c !== row);
       
-      // If not a sibling, look inside the row. Notion often puts nested content inside the flex-grow item.
       if (!nested && row) {
-          // Look for a child of row that contains blocks but IS NOT the one containing the text we just read.
-          // The flex item containing text:
           const textContainerFlexItem = contentDiv ? contentDiv.closest('div[style*="flex-grow"]') : null;
           
           if (textContainerFlexItem) {
-              // Does this flex item contain *other* blocks?
               const nestedBlocks = Array.from(textContainerFlexItem.children).filter(c => c.classList.contains('notion-selectable'));
               if (nestedBlocks.length > 0) {
-                  // We can't return a single element if there are multiple.
-                  // We need to return a wrapper or handle it.
-                  // `parseNotionBlock` takes an element and iterates its children.
-                  // So we can return `textContainerFlexItem`. 
-                  // BUT `parseNotionBlock` will re-process the text block if we are not careful?
-                  // `contentDiv` is usually NOT `notion-selectable`.
-                  // So `parseNotionBlock` on `textContainerFlexItem` will iterate children.
-                  // If children are `notion-selectable`, it processes them.
-                  // If `contentDiv` is effectively a leaf (text), it will be skipped by `parseNotionBlock`'s `if (child.classList.contains('notion-selectable'))`.
-                  // So this is safe!
-                  nested = textContainerFlexItem;
+                  nested = textContainerFlexItem; 
               }
           }
       }
