@@ -5,16 +5,14 @@
   // --- Helpers ---
 
   function isVisible(elem) {
-    // Basic check for display:none
     if (elem.style && elem.style.display === 'none') return false;
     return true;
   }
 
-  // Extract text with basic Markdown formatting
   function getFormattedText(node) {
     if (!node) return "";
     
-    // Skip comments in text extraction
+    // Skip comments
     if (node.nodeType === Node.ELEMENT_NODE && 
        (node.classList.contains('notion-margin-discussion-item') || node.classList.contains('notion-discussion-container'))) {
         return "";
@@ -31,7 +29,6 @@
       content += getFormattedText(child);
     });
 
-    // Formatting logic
     const tagName = node.tagName.toLowerCase();
     let style;
     try {
@@ -40,23 +37,18 @@
         style = {};
     }
     
-    // Bold
     if (tagName === 'b' || tagName === 'strong' || (style.fontWeight && parseInt(style.fontWeight) >= 600)) {
         if (content.trim() && !content.startsWith('**') && !content.endsWith('**')) content = `**${content}**`;
     }
-    // Italic
     if (tagName === 'i' || tagName === 'em' || style.fontStyle === 'italic') {
         if (content.trim() && !content.startsWith('_') && !content.endsWith('_')) content = `_${content}_`;
     }
-    // Strikethrough
     if (tagName === 's' || tagName === 'strike' || (style.textDecorationLine && style.textDecorationLine.includes('line-through'))) {
         if (content.trim() && !content.startsWith('~') && !content.endsWith('~')) content = `~${content}~`;
     }
-    // Inline Code
     if (tagName === 'code' || (style.fontFamily && style.fontFamily.includes('monospace')) || node.classList.contains('notion-inline-code')) {
         if (content.trim() && !content.startsWith('`') && !content.endsWith('`')) content = `\`${content}\``;
     }
-    // Links
     if (tagName === 'a' && node.href) {
         if (content.trim()) {
             content = `[${content}](${node.href})`;
@@ -91,7 +83,7 @@
 
   function parseNotionBlock(element, depth = 0) {
       if (!element) return "";
-
+      
       // Prevent cycles
       if (visited.has(element)) return "";
       visited.add(element);
@@ -108,10 +100,9 @@
           }
 
           // Identify if this child is a block itself
-          // Notion blocks have `notion-selectable` class
           markdown += child.classList.contains(NOTION_CLASSES.BLOCK_CLASS) ?
             processBlock(child, depth) :
-            parseNotionBlock(child, depth); // Recurse into non-block children
+            parseNotionBlock(child, depth);
       });
       
       return markdown;
@@ -119,57 +110,89 @@
 
   function processBlock(node, depth) {
       let md = "";
-      const indent = "  ".repeat(depth);
-
+      const indent = "    ".repeat(depth);
+      
       // Extract text and any nested block containers
       const { text, nestedNodes } = extractNodeData(node);
-
+      
       // Helper to process nested nodes
       const processNested = (d) => {
           let res = "";
           if (nestedNodes && nestedNodes.length > 0) {
               nestedNodes.forEach(child => {
-                  if (child.classList.contains('notion-selectable')) {
-                      res += processBlock(child, d);
-                  } else {
-                      res += parseNotionBlock(child, d);
-                  }
+                 res += processBlock(child, d);
               });
           }
           return res;
       };
       
+      const hasText = text && text.trim().length > 0;
+      const hasNested = nestedNodes && nestedNodes.length > 0;
+      
+      // 8. Divider (check first as it has no text)
+      if (node.classList.contains(NOTION_CLASSES.DIVIDER)) {
+          return `\n---\n\n`;
+      }
+
+      if (!hasText && !hasNested) {
+          return "";
+      }
+
       // 1. Headers
       if ([
-            NOTION_CLASSES.HEADER,
-            NOTION_CLASSES.SUB_HEADER,
-            NOTION_CLASSES.SUB_SUB_HEADER
-        ].some(cls => node.classList.contains(cls))) {
-          return `\n# ${text}\n\n` + processNested(depth);
+          NOTION_CLASSES.HEADER,
+          NOTION_CLASSES.SUB_HEADER,
+          NOTION_CLASSES.SUB_SUB_HEADER
+      ].some(cls => node.classList.contains(cls))) {
+          if (!hasText) {
+             return processNested(depth);
+          }
+          let prefix = "#";
+          if (node.classList.contains(NOTION_CLASSES.SUB_HEADER)) prefix = "##";
+          if (node.classList.contains(NOTION_CLASSES.SUB_SUB_HEADER)) prefix = "###";
+          return `\n${prefix} ${text}\n\n` + processNested(depth);
       }
 
       // 2. Lists
       if (node.classList.contains(NOTION_CLASSES.BULLETED_LIST)) {
-          md += `${indent}- ${text}\n`;
-          md += processNested(depth + 1);
-          return md;
+          if (hasText) {
+              md += `${indent}- ${text}\n`;
+              md += processNested(depth + 1);
+              return md;
+          } else if (hasNested) {
+              md += processNested(depth); 
+              return md;
+          }
+          return "";
       }
       if (node.classList.contains(NOTION_CLASSES.NUMBERED_LIST)) {
-          md += `${indent}1. ${text}\n`;
-          md += processNested(depth + 1);
-          return md;
+           if (hasText) {
+              md += `${indent}1. ${text}\n`;
+              md += processNested(depth + 1);
+              return md;
+          } else if (hasNested) {
+              md += processNested(depth);
+              return md;
+          }
+          return "";
       }
 
       // 3. To-Do
       if (node.classList.contains(NOTION_CLASSES.TO_DO)) {
-          const checkbox = node.querySelector('input[type="checkbox"]');
-          const isChecked = checkbox && (checkbox.checked || checkbox.getAttribute('aria-checked') === 'true');
-          md += `${indent}- [${isChecked ? 'x' : ' '}] ${text}\n`;
-          md += processNested(depth + 1);
-          return md;
+          if (hasText) {
+              const checkbox = node.querySelector('input[type="checkbox"]');
+              const isChecked = checkbox && (checkbox.checked || checkbox.getAttribute('aria-checked') === 'true');
+              md += `${indent}- [${isChecked ? 'x' : ' '}] ${text}\n`;
+              md += processNested(depth + 1);
+              return md;
+          } else if (hasNested) {
+              md += processNested(depth);
+              return md;
+          }
+          return "";
       }
 
-      // 4. Code / Mermaid
+      // 4. Code
       if (node.classList.contains(NOTION_CLASSES.CODE)) {
           const codeEl = node.querySelector('code') || node.querySelector('[contenteditable="true"]') || node;
           const codeText = codeEl.textContent; // Use raw text for code
@@ -177,17 +200,26 @@
           if (codeText.trim().startsWith('flowchart') || codeText.trim().startsWith('graph') || codeText.trim().startsWith('sequenceDiagram')) {
               lang = "mermaid";
           }
-          md += `\n${indent}\`\`\`${lang}\n${codeText}\n${indent}\`\`\`\n\n`;
-          // Code blocks rarely have nested blocks, but if they do:
+          
+          // Indent the code content itself
+          const indentedCode = codeText.split('\n').map(line => `${indent}${line}`).join('\n');
+          
+          md += `\n${indent}\`\`\`${lang}\n${indentedCode}\n${indent}\`\`\`\n\n`;
           md += processNested(depth); 
           return md;
       }
 
       // 5. Quote
       if (node.classList.contains(NOTION_CLASSES.QUOTE)) {
-          md += `\n${indent}> ${text}\n\n`;
-          md += processNested(depth); // Keep same depth for nested items in quote? Or indent?
-          return md;
+          if (hasText) {
+              md += `\n${indent}> ${text}\n\n`;
+              md += processNested(depth);
+              return md;
+          } else if (hasNested) {
+              md += processNested(depth);
+              return md;
+          }
+          return "";
       }
 
       // 6. Callout
@@ -207,11 +239,6 @@
           return md;
       }
       
-      // 8. Divider
-      if (node.classList.contains(NOTION_CLASSES.DIVIDER)) {
-          return `\n---\n\n`;
-      }
-
       // 9. Text / Default
       if (text) {
           md += `${indent}${text}\n\n`;
@@ -224,43 +251,44 @@
   }
 
   function extractNodeData(node) {
-      const children = Array.from(node.children);
-      
+      // 1. Extract Text
       // Prioritize contenteditable or explicit text block
       const contentNode = node.querySelector('[contenteditable="true"]') || node.querySelector('.notion-text-block');
-      
       let text = "";
-      let contentContainer = null;
-
       if (contentNode) {
           text = getFormattedText(contentNode).trim();
-          
-          // Find the direct child of 'node' that contains this content
-          let curr = contentNode;
-          // Safety counter
-          let i = 0;
-          while (curr && curr.parentElement !== node && i < 50) {
-              curr = curr.parentElement;
-              i++;
-          }
-          if (curr && curr.parentElement === node) {
-            contentContainer = curr;
-          }
       }
+
+      // 2. Extract Nested Blocks (shallowest descendants)
+      const nestedNodes = [];
       
-      // If we didn't find contentContainer but have text (rare, maybe flat node?), 
-      // assume no nested nodes relative to text if we can't separate them.
-      // But typically, if we didn't find contentNode, text is empty.
-      
-      // Identify nested nodes: All children that are NOT the contentContainer
-      // and NOT comments.
-      const nestedNodes = children.filter(child => {
-          if (child === contentContainer) return false;
-          if (child.classList.contains('notion-margin-discussion-item')) return false;
-          if (child.classList.contains('notion-discussion-container')) return false;
-          if (!isVisible(child)) return false;
-          return true;
-      });
+      function findNested(element) {
+        if (!element || !element.children) return;
+        
+        const children = Array.from(element.children);
+        
+        children.forEach(child => {
+             // Filter comments
+             if (NOTION_CLASSES.COMMENTS.some(cls => child.classList.contains(cls))) {
+                 return;
+             }
+             
+             // Ignore the node itself if we are at top level (shouldn't happen with recursion)
+             if (child === node) return; // safety
+             
+             // Check if this child is a block
+             if (child.classList.contains(NOTION_CLASSES.BLOCK_CLASS)) {
+                 nestedNodes.push(child);
+                 // Do not recurse into this block, as it will be processed by processBlock
+                 return;
+             }
+             
+             // Not a block, so it's a wrapper. Recurse.
+             findNested(child);
+        });
+      }
+
+      findNested(node);
 
       return { text, nestedNodes };
   }
