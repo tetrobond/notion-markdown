@@ -120,6 +120,24 @@
   function processBlock(node, depth) {
       let md = "";
       const indent = "  ".repeat(depth);
+
+      // Extract text and any nested block containers
+      const { text, nestedNodes } = extractNodeData(node);
+
+      // Helper to process nested nodes
+      const processNested = (d) => {
+          let res = "";
+          if (nestedNodes && nestedNodes.length > 0) {
+              nestedNodes.forEach(child => {
+                  if (child.classList.contains('notion-selectable')) {
+                      res += processBlock(child, d);
+                  } else {
+                      res += parseNotionBlock(child, d);
+                  }
+              });
+          }
+          return res;
+      };
       
       // 1. Headers
       if ([
@@ -127,20 +145,18 @@
             NOTION_CLASSES.SUB_HEADER,
             NOTION_CLASSES.SUB_SUB_HEADER
         ].some(cls => node.classList.contains(cls))) {
-          return `\n# ${getBlockContent(node)}\n\n`;
+          return `\n# ${text}\n\n` + processNested(depth);
       }
 
       // 2. Lists
       if (node.classList.contains(NOTION_CLASSES.BULLETED_LIST)) {
-          const { text, nested } = getListContent(node);
           md += `${indent}- ${text}\n`;
-          if (nested) md += parseNotionBlock(nested, depth + 1);
+          md += processNested(depth + 1);
           return md;
       }
       if (node.classList.contains(NOTION_CLASSES.NUMBERED_LIST)) {
-          const { text, nested } = getListContent(node);
           md += `${indent}1. ${text}\n`;
-          if (nested) md += parseNotionBlock(nested, depth + 1);
+          md += processNested(depth + 1);
           return md;
       }
 
@@ -148,42 +164,45 @@
       if (node.classList.contains(NOTION_CLASSES.TO_DO)) {
           const checkbox = node.querySelector('input[type="checkbox"]');
           const isChecked = checkbox && (checkbox.checked || checkbox.getAttribute('aria-checked') === 'true');
-          const { text, nested } = getListContent(node);
           md += `${indent}- [${isChecked ? 'x' : ' '}] ${text}\n`;
-          if (nested) md += parseNotionBlock(nested, depth + 1);
+          md += processNested(depth + 1);
           return md;
       }
 
       // 4. Code / Mermaid
       if (node.classList.contains(NOTION_CLASSES.CODE)) {
           const codeEl = node.querySelector('code') || node.querySelector('[contenteditable="true"]') || node;
-          const text = codeEl.textContent;
+          const codeText = codeEl.textContent; // Use raw text for code
           let lang = "";
-          if (text.trim().startsWith('flowchart') || text.trim().startsWith('graph') || text.trim().startsWith('sequenceDiagram')) {
+          if (codeText.trim().startsWith('flowchart') || codeText.trim().startsWith('graph') || codeText.trim().startsWith('sequenceDiagram')) {
               lang = "mermaid";
           }
-          return `\n${indent}\`\`\`${lang}\n${text}\n${indent}\`\`\`\n\n`;
+          md += `\n${indent}\`\`\`${lang}\n${codeText}\n${indent}\`\`\`\n\n`;
+          // Code blocks rarely have nested blocks, but if they do:
+          md += processNested(depth); 
+          return md;
       }
 
       // 5. Quote
       if (node.classList.contains(NOTION_CLASSES.QUOTE)) {
-          const text = getBlockContent(node);
-          return `\n${indent}> ${text}\n\n`;
+          md += `\n${indent}> ${text}\n\n`;
+          md += processNested(depth); // Keep same depth for nested items in quote? Or indent?
+          return md;
       }
 
       // 6. Callout
       if (node.classList.contains(NOTION_CLASSES.CALLOUT)) {
-          const text = getBlockContent(node);
           const icon = node.querySelector('.notion-record-icon img, .notion-record-icon span');
           const iconText = icon ? (icon.getAttribute('alt') || icon.textContent) : "";
-          return `\n${indent}> ${iconText} ${text}\n\n`;
+          md += `\n${indent}> ${iconText} ${text}\n\n`;
+          md += processNested(depth);
+          return md;
       }
 
       // 7. Toggle
       if (node.classList.contains(NOTION_CLASSES.TOGGLE)) {
-          const { text, nested } = getListContent(node);
           md += `\n${indent}<details>\n${indent}<summary>${text}</summary>\n\n`;
-          if (nested) md += parseNotionBlock(nested, depth + 1);
+          md += processNested(depth + 1);
           md += `${indent}</details>\n\n`;
           return md;
       }
@@ -193,81 +212,57 @@
           return `\n---\n\n`;
       }
 
-      // 9. Text (Explicit or Implicit)
-      const text = getBlockContent(node);
+      // 9. Text / Default
       if (text) {
-          return `${indent}${text}\n\n`;
+          md += `${indent}${text}\n\n`;
       }
       
-      // Fallback: If no text found, but has selectable children, recurse.
-      if (node.querySelector('.notion-selectable')) {
-          // IMPORTANT: Check visited to ensure we don't loop if we somehow got here with same node
-          if (!visited.has(node)) {
-             return parseNotionBlock(node, depth);
-          } else {
-             // If node is already visited, we might still need to process its children 
-             // if they haven't been processed.
-             // But parseNotionBlock adds to visited at START.
-             // So if we are here, we are calling parseNotionBlock(node) again?
-             // NO. processBlock(node) is called. node IS visited?
-             // No, processBlock doesn't add to visited. parseNotionBlock does.
-             // So node is NOT in visited (unless it's a cycle).
-             // Wait. parseNotionBlock(parent) -> processBlock(child). child is NOT in visited.
-             // So calling parseNotionBlock(child) is valid.
-             return parseNotionBlock(node, depth);
-          }
-      }
+      // Always process nested for text blocks too (indented paragraphs)
+      md += processNested(depth + 1);
 
-      return "";
+      return md;
   }
 
-  function getBlockContent(node) {
-      const editables = [...node.querySelectorAll('[contenteditable="true"]')];
-      if (editables.length > 0) return editables.map(getFormattedText).join('  \n').trim();
-
-      const textBlocks = [...node.querySelectorAll(`.${NOTION_CLASSES.TEXT}`)];
-      if (textBlocks.length > 0) return textBlocks.map(getFormattedText).join('  \n').trim();
-      
-      return getFormattedText(node).trim();
-  }
-
-  function getListContent(node) {
-      let text = "";
-      let nested = null;
-      
+  function extractNodeData(node) {
       const children = Array.from(node.children);
-      const contentDiv = node.querySelector('[contenteditable="true"]');
       
-      let row;
-      if (contentDiv) {
-          let curr = contentDiv;
-          // Robust loop with limit
+      // Prioritize contenteditable or explicit text block
+      const contentNode = node.querySelector('[contenteditable="true"]') || node.querySelector('.notion-text-block');
+      
+      let text = "";
+      let contentContainer = null;
+
+      if (contentNode) {
+          text = getFormattedText(contentNode).trim();
+          
+          // Find the direct child of 'node' that contains this content
+          let curr = contentNode;
+          // Safety counter
           let i = 0;
           while (curr && curr.parentElement !== node && i < 50) {
               curr = curr.parentElement;
               i++;
           }
-          row = curr;
-          text = getFormattedText(contentDiv).trim();
-      } else {
-          row = children[0];
-          text = getFormattedText(row).trim();
-      }
-      
-      nested = children.find(c => c !== row);
-      
-      if (!nested && row) {
-          const textContainerFlexItem = contentDiv ? contentDiv.closest('div[style*="flex-grow"]') : null;
-          
-          if (textContainerFlexItem) {
-              const nestedBlocks = Array.from(textContainerFlexItem.children).filter(c => c.classList.contains('notion-selectable'));
-              if (nestedBlocks.length > 0) {
-                  nested = textContainerFlexItem; 
-              }
+          if (curr && curr.parentElement === node) {
+            contentContainer = curr;
           }
       }
       
-      return { text, nested };
+      // If we didn't find contentContainer but have text (rare, maybe flat node?), 
+      // assume no nested nodes relative to text if we can't separate them.
+      // But typically, if we didn't find contentNode, text is empty.
+      
+      // Identify nested nodes: All children that are NOT the contentContainer
+      // and NOT comments.
+      const nestedNodes = children.filter(child => {
+          if (child === contentContainer) return false;
+          if (child.classList.contains('notion-margin-discussion-item')) return false;
+          if (child.classList.contains('notion-discussion-container')) return false;
+          if (!isVisible(child)) return false;
+          return true;
+      });
+
+      return { text, nestedNodes };
   }
 
   // --- Initialization ---
